@@ -966,7 +966,7 @@ function applyFilter(fid) {
   const s  = computeFilteredSeries(fd);
   const n  = fd.nav50.length;
 
-  // ── helper: mean of non-null array ──────────────────────────────────
+  // helper: mean of non-null array values (values already in % for vol/return series)
   const mean = arr => { const v = arr.filter(x => x !== null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : 0; };
 
   if (fid === 'nav') {
@@ -977,7 +977,7 @@ function applyFilter(fid) {
     updateChartData(chartRoll1yr, s.dates, [s.roll1y50, s.roll1y500]);
     updateChartData(chartRoll3yr, s.dates, [s.roll3y50, s.roll3y500]);
 
-    // Recalculate stat pills
+    // roll series are already in % — just average them directly
     const avg1y50  = mean(s.roll1y50);
     const avg1y500 = mean(s.roll1y500);
     const avg3y50  = mean(s.roll3y50);
@@ -985,12 +985,10 @@ function applyFilter(fid) {
     const gap1y    = avg1y500 - avg1y50;
     const gap3y    = avg3y500 - avg3y50;
 
-    const pct = (v, d=1) => (v >= 0 ? '+' : '') + v.toFixed(d) + '%';
-
-    setText('roll-avg1y-50',  avg1y50.toFixed(1) + '%');
+    setText('roll-avg1y-50',  avg1y50.toFixed(1)  + '%');
     setText('roll-avg1y-500', avg1y500.toFixed(1) + '%');
-    setText('roll-avg3y-50',  avg3y50.toFixed(1) + '%');
-    setText('roll-gap3y',     pct(gap3y));
+    setText('roll-avg3y-50',  avg3y50.toFixed(1)  + '%');
+    setText('roll-gap3y',     (gap3y >= 0 ? '+' : '') + gap3y.toFixed(1) + '%');
     setText('roll-avg1y-diff', avg1y50 >= avg1y500
       ? `✅ N50 leads by ${Math.abs(gap1y).toFixed(1)}pp in this period`
       : `N500 ahead by ${Math.abs(gap1y).toFixed(1)}pp in this period`);
@@ -1001,43 +999,70 @@ function applyFilter(fid) {
     updateChartData(chartVol,    s.dates, [s.rvol50,   s.rvol500]);
     updateChartData(chartSharpe, s.dates, [s.sharpe50, s.sharpe500]);
 
-    // Averages from filtered series
-    const avgRvol50  = mean(s.rvol50)   * 100;
-    const avgRvol500 = mean(s.rvol500)  * 100;
-    const avgSh50    = mean(s.sharpe50);
-    const avgSh500   = mean(s.sharpe500);
+    // rvol series are already in % (e.g. 19.2) — just average, no * 100
+    const avgRvol50  = mean(s.rvol50);
+    const avgRvol500 = mean(s.rvol500);
 
-    // Full-period stats from filtered daily returns
-    const r50  = fd.nav50.map((v,i) => i===0 ? null : (v/fd.nav50[i-1]-1)).filter(x=>x!==null);
-    const r500 = fd.nav500.map((v,i)=> i===0 ? null : (v/fd.nav500[i-1]-1)).filter(x=>x!==null);
-    const std  = arr => { const m=arr.reduce((a,b)=>a+b)/arr.length; return Math.sqrt(arr.reduce((a,b)=>a+(b-m)**2,0)/(arr.length-1)); };
-    const pvol50  = std(r50)  * Math.sqrt(252) * 100;
-    const pvol500 = std(r500) * Math.sqrt(252) * 100;
-    const pret50  = (Math.pow(fd.nav50[fd.nav50.length-1]/fd.nav50[0], 252/r50.length)-1) * 100;
-    const pret500 = (Math.pow(fd.nav500[fd.nav500.length-1]/fd.nav500[0], 252/r500.length)-1) * 100;
-    const psh50   = (pret50  - 6) / pvol50;
-    const psh500  = (pret500 - 6) / pvol500;
+    // sharpe series are ratios (e.g. 0.533) — just average directly
+    const avgSh50  = mean(s.sharpe50);
+    const avgSh500 = mean(s.sharpe500);
 
-    // Calmar: CAGR / |max drawdown|
-    const maxDD50  = Math.min(...s.dd50)  / 100;
-    const maxDD500 = Math.min(...s.dd500) / 100;
-    const years    = r50.length / 252;
-    const cagr50   = (Math.pow(fd.nav50[fd.nav50.length-1]/fd.nav50[0], 1/years)-1) * 100;
-    const cagr500  = (Math.pow(fd.nav500[fd.nav500.length-1]/fd.nav500[0], 1/years)-1) * 100;
-    const calmar50  = maxDD50  !== 0 ? -(cagr50  / (maxDD50  * 100)) : 0;
-    const calmar500 = maxDD500 !== 0 ? -(cagr500 / (maxDD500 * 100)) : 0;
+    // Period stats from full daily data within the date range
+    // Use the raw (unsampled) DATA arrays and filter by date string
+    const di = DATA.dates.reduce((acc, d, i) => {
+      if (d >= start && d <= end) acc.push(i);
+      return acc;
+    }, []);
+    const dailyNav50  = di.map(i => DATA.nav50[i]);
+    const dailyNav500 = di.map(i => DATA.nav500[i]);
 
-    // Sortino
-    const rf_d = 0.06/252;
-    const sortino = r => {
-      const exc = r.map(x => x - rf_d);
-      const down = exc.filter(x=>x<0);
-      const ddStd = down.length ? Math.sqrt(down.reduce((a,b)=>a+b*b,0)/down.length)*Math.sqrt(252) : 1;
-      return (r.reduce((a,b)=>a+b)/r.length*252 - 0.06) / ddStd;
+    // Daily log returns
+    const logRet = nav => nav.slice(1).map((v, i) => Math.log(v / nav[i]));
+    const lr50  = logRet(dailyNav50);
+    const lr500 = logRet(dailyNav500);
+
+    const stdDev = arr => {
+      const m = arr.reduce((a,b)=>a+b,0)/arr.length;
+      return Math.sqrt(arr.reduce((a,b)=>a+(b-m)**2,0)/(arr.length-1));
     };
-    const sort50  = sortino(r50);
-    const sort500 = sortino(r500);
 
+    // Annualised volatility from actual daily log returns
+    const pvol50  = stdDev(lr50)  * Math.sqrt(252) * 100;
+    const pvol500 = stdDev(lr500) * Math.sqrt(252) * 100;
+
+    // Annualised return (CAGR) from daily data
+    const nyears50  = lr50.length  / 252;
+    const nyears500 = lr500.length / 252;
+    const cagr50  = (Math.pow(dailyNav50[dailyNav50.length-1]/dailyNav50[0],   1/nyears50)  - 1) * 100;
+    const cagr500 = (Math.pow(dailyNav500[dailyNav500.length-1]/dailyNav500[0], 1/nyears500) - 1) * 100;
+
+    // Period Sharpe from daily data
+    const psh50  = (cagr50  - 6) / pvol50;
+    const psh500 = (cagr500 - 6) / pvol500;
+
+    // Max drawdown from filtered daily series
+    let pk50 = dailyNav50[0], pk500 = dailyNav500[0];
+    let md50 = 0, md500 = 0;
+    dailyNav50.forEach(v  => { pk50  = Math.max(pk50,  v);  md50  = Math.min(md50,  (v/pk50-1));  });
+    dailyNav500.forEach(v => { pk500 = Math.max(pk500, v); md500 = Math.min(md500, (v/pk500-1)); });
+
+    // Calmar = CAGR / |Max Drawdown|
+    const calmar50  = md50  !== 0 ? -(cagr50  / (md50  * 100)) : 0;
+    const calmar500 = md500 !== 0 ? -(cagr500 / (md500 * 100)) : 0;
+
+    // Sortino from daily log returns
+    const sortino = (lr, cagr) => {
+      const rf_d = 0.06 / 252;
+      const exc  = lr.map(x => x - rf_d);
+      const down = exc.filter(x => x < 0);
+      if (!down.length) return 0;
+      const ddStd = Math.sqrt(down.reduce((a,b) => a + b*b, 0) / down.length) * Math.sqrt(252);
+      return (cagr/100 - 0.06) / ddStd;
+    };
+    const sort50  = sortino(lr50,  cagr50);
+    const sort500 = sortino(lr500, cagr500);
+
+    // Update pill values
     setText('risk-sharpe-50',   avgSh50.toFixed(3));
     setText('risk-sharpe-500',  avgSh500.toFixed(3));
     setText('risk-psharpe-50',  psh50.toFixed(3));
@@ -1061,14 +1086,14 @@ function applyFilter(fid) {
       ? `N500 ${Math.abs(pvolDiff).toFixed(1)}pp lower vol`
       : `N50 ${Math.abs(pvolDiff).toFixed(1)}pp lower vol`);
     setText('risk-sharpe-note', avgSh500 > avgSh50
-      ? `N500 higher by ${(avgSh500-avgSh50).toFixed(3)}`
-      : `✅ N50 higher by ${(avgSh50-avgSh500).toFixed(3)}`);
+      ? `N500 higher by ${(avgSh500 - avgSh50).toFixed(3)}`
+      : `✅ N50 higher by ${(avgSh50 - avgSh500).toFixed(3)}`);
     setText('risk-calmar-note', calmar50 > calmar500
-      ? `✅ N50 ${((calmar50/calmar500-1)*100).toFixed(1)}% better Calmar`
-      : `N500 ${((calmar500/calmar50-1)*100).toFixed(1)}% better Calmar`);
+      ? `✅ N50 ${((calmar50/calmar500 - 1)*100).toFixed(1)}% better Calmar`
+      : `N500 ${((calmar500/calmar50 - 1)*100).toFixed(1)}% better Calmar`);
     setText('risk-sortino-note', sort50 > sort500
-      ? `✅ N50 leads by ${(sort50-sort500).toFixed(3)}`
-      : `N500 leads by ${(sort500-sort50).toFixed(3)}`);
+      ? `✅ N50 leads by ${(sort50 - sort500).toFixed(3)}`
+      : `N500 leads by ${(sort500 - sort50).toFixed(3)}`);
   }
 
   if (fid === 'dd') {
